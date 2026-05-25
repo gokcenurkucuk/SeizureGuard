@@ -1,0 +1,7 @@
+Flask
+pyserial
+ollama
+pyttsx3
+sounddevice
+numpy
+vosk

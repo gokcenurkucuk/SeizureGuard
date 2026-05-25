@@ -1,0 +1,19 @@
+# ESP-IDF build output
+esp/SeizureGuard/build/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local models and large generated files
+vosk-model*/
+*.zip
+*.onnx
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/ipch/

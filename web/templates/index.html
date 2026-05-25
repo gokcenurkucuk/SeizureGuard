@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CEN322 Project Dashboard - SeizureGuard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            background-color: #0f172a;
+            color: #f1f5f9;
+            padding: 30px;
+        }
+        .dashboard-container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #1e293b;
+            border: 2px solid #334155;
+            border-radius: 8px;
+            padding: 25px;
+        }
+        .project-meta {
+            border-bottom: 2px solid #334155;
+            padding-bottom: 15px;
+            margin-bottom: 25px;
+        }
+        .project-meta h1 {
+            font-size: 26px;
+            color: #f97316;
+            letter-spacing: 1px;
+        }
+        .project-meta p {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 5px;
+        }
+        .status-banner {
+            padding: 12px;
+            border-radius: 6px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 25px;
+            text-transform: uppercase;
+            font-size: 14px;
+            letter-spacing: 1px;
+        }
+        .status-waiting { background-color: #475569; color: #ffffff; }
+        .status-normal { background-color: #16a34a; color: #ffffff; }
+        .status-danger { background-color: #dc2626; color: #ffffff; animation: emergency-flash 1s infinite; }
+        
+        @keyframes emergency-flash {
+            0% { opacity: 1; }
+            50% { opacity: 0.6; }
+            100% { opacity: 1; }
+        }
+        
+        .vitals-grid {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 15px 0;
+            margin-bottom: 25px;
+        }
+        .vital-card {
+            display: table-cell;
+            background-color: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 20px;
+            text-align: center;
+        }
+        .vital-label {
+            font-size: 11px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+        .vital-value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #f8fafc;
+            font-family: Arial, sans-serif;
+        }
+        .vital-unit {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 5px;
+        }
+        .ai-section {
+            background-color: #0f172a;
+            border-left: 4px solid #f97316;
+            border-top: 1px solid #334155;
+            border-right: 1px solid #334155;
+            border-bottom: 1px solid #334155;
+            border-radius: 0 6px 6px 0;
+            padding: 20px;
+        }
+        .ai-section.ai-danger {
+            border-left-color: #dc2626;
+            background-color: #2d0b0b;
+        }
+        .ai-title {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        .ai-text {
+            font-size: 14px;
+            color: #e2e8f0;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-container">
+    <div class="project-meta">
+        <h1>SeizureGuard Dashboard</h1>
+        <p>CEN322 - Internet of Things Project | Student Copy Telemetry Node</p>
+    </div>
+
+    <div id="system-status-banner" class="status-banner status-waiting">
+        Connecting to Edge Gateway...
+    </div>
+
+    <div class="vitals-grid">
+        <div class="vital-card">
+            <div class="vital-label">Heart Rate</div>
+            <div id="hr-val" class="vital-value">--</div>
+            <div class="vital-unit">BPM</div>
+        </div>
+        <div class="vital-card">
+            <div class="vital-label">Blood Oxygen</div>
+            <div id="spo2-val" class="vital-value">--</div>
+            <div class="vital-unit">SpO2 %</div>
+        </div>
+        <div class="vital-card">
+            <div class="vital-label">Motion Intensity</div>
+            <div id="vibration-val" class="vital-value">--</div>
+            <div class="vital-unit">G-Force</div>
+        </div>
+    </div>
+
+    <div id="ai-panel-box" class="ai-section">
+        <div class="ai-title">Edge AI Execution Block</div>
+        <div id="ai-response-text" class="ai-text">Waiting for real-time parser execution pipeline...</div>
+    </div>
+</div>
+
+<script>
+    async function fetchTelemetry() {
+        try {
+            const response = await fetch('/api/data');
+            const data = await response.json();
+            
+            // Değerleri HTML elemanlarına bas
+            document.getElementById('hr-val').innerText = data.heart_rate > 0 ? data.heart_rate : '--';
+            document.getElementById('spo2-val').innerText = data.spo2 > 0 ? data.spo2 : '--';
+            document.getElementById('vibration-val').innerText = data.shake_level > 0 ? data.shake_level.toFixed(2) : '--';
+            document.getElementById('ai-response-text').innerText = data.ai_decision;
+            
+            const banner = document.getElementById('system-status-banner');
+            const aiPanel = document.getElementById('ai-panel-box');
+            
+            // Durum Renk Yönetimi
+            if (data.status === 'danger') {
+                banner.className = 'status-banner status-danger';
+                banner.innerText = '⚠️ EMERGENCY: Epilepsy Seizure Detected';
+                aiPanel.className = 'ai-section ai-danger';
+            } else if (data.status === 'normal') {
+                banner.className = 'status-banner status-normal';
+                banner.innerText = 'SYSTEM NORMAL - Vitals Stable';
+                aiPanel.className = 'ai-section';
+            } else {
+                banner.className = 'status-banner status-waiting';
+                banner.innerText = 'Waiting for ESP32-S3 data packets...';
+                aiPanel.className = 'ai-section';
+            }
+        } catch (error) {
+            document.getElementById('ai-response-text').innerText = "Edge Sunucusu Bağlantı Hatası.";
+        }
+    }
+
+    // Saniyede bir asenkron güncelleme (Hocanın istediği gibi AJAX Fetch)
+    setInterval(fetchTelemetry, 1000);
+</script>
+
+</body>
+</html>
