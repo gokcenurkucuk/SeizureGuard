@@ -1,7 +1,6 @@
 from flask import Flask, render_template, jsonify, request
 import json
 import os
-import queue
 import re
 import threading
 import time
@@ -12,21 +11,20 @@ import serial
 
 try:
     import sounddevice as sd
-    import vosk
+    import numpy as np
 except Exception:
     sd = None
-    vosk = None
+    np = None
 
 app = Flask(__name__)
 
-SERIAL_PORT = os.getenv("SEIZUREGUARD_SERIAL_PORT", "COM3")
+SERIAL_PORT = os.getenv("SEIZUREGUARD_SERIAL_PORT", "COM13")
 SERIAL_BAUD = int(os.getenv("SEIZUREGUARD_SERIAL_BAUD", "115200"))
 OLLAMA_MODEL = os.getenv("SEIZUREGUARD_OLLAMA_MODEL", "llama3.2")
 ENABLE_VOICE = os.getenv("SEIZUREGUARD_ENABLE_VOICE", "1").lower() not in ("0", "false", "no")
-VOSK_MODEL_PATH = os.path.expanduser(os.getenv("SEIZUREGUARD_VOSK_MODEL", "~/vosk-model-small-en-us-0.15"))
 
 HR_SEIZURE_BPM = 120
-SPO2_SEIZURE_PERCENT = 90
+SPO2_SEIZURE_PERCENT = 80
 MOTION_SEIZURE_G = 1.5
 TREMOR_MIN_HZ = 4.0
 TREMOR_MAX_HZ = 12.0
@@ -43,21 +41,33 @@ latest_data = {
 ai_lock = threading.Lock()
 tts_lock = threading.Lock()
 voice_lock = threading.Lock()
-audio_q = queue.Queue()
+
+whisper_model = None
 
 emergency_mode_active = False
 emergency_generation = 0
+emergency_start_time = 0.0
 tts_active = False
 voice_accepting = False
 last_user_text = ""
 last_user_time = 0.0
+_tts_engine_ref = None
+
+EMERGENCY_MIN_DURATION = 5.0
 
 SYSTEM_PROMPT = (
-    "Act as an emergency assistant for an epilepsy monitoring wearable. "
-    "First address the patient. If there is no meaningful response, address bystanders. "
-    "Reply in English with exactly one short, calm, authoritative spoken sentence. "
-    "Do not add extra explanations. Do not claim a definite diagnosis."
+    "You are SeizureGuard, an AI emergency voice assistant for an epilepsy seizure detection wearable. "
+    "You will be given a stage and instructions. Follow them exactly. "
+    "Always reply with ONE short, calm, spoken English sentence. No lists. No diagnosis. No extra words."
 )
+
+BYSTANDER_STEPS = [
+    "Do not restrain the person or try to stop their movements.",
+    "Place something soft under their head and move sharp objects away.",
+    "Do not put anything in their mouth — they cannot swallow their tongue.",
+    "Note the time — check how long the seizure has been going on.",
+    "If the seizure lasts longer than five minutes, call emergency services immediately.",
+]
 
 
 def first_sentence(text):
@@ -97,7 +107,7 @@ def ask_local_ollama(stage_name, fallback_message, extra_context=""):
 
 
 def speak_text(text):
-    global tts_active
+    global tts_active, _tts_engine_ref
     sentence = first_sentence(text)
     if not sentence:
         return
@@ -106,18 +116,25 @@ def speak_text(text):
         tts_active = True
         try:
             engine = pyttsx3.init()
+            _tts_engine_ref = engine
             engine.setProperty("rate", 135)
             engine.say(sentence)
             engine.runAndWait()
         except Exception as e:
             print(f"[TTS ERROR] {e}")
         finally:
+            _tts_engine_ref = None
             tts_active = False
-            while not audio_q.empty():
-                try:
-                    audio_q.get_nowait()
-                except Exception:
-                    break
+
+
+def interrupt_tts():
+    eng = _tts_engine_ref
+    if eng is not None:
+        try:
+            eng.stop()
+            print("[TTS] Kullanici konustu, TTS kesildi.")
+        except Exception:
+            pass
 
 
 def say_ai(label, stage_name, fallback_message, extra_context=""):
@@ -156,29 +173,60 @@ def get_reply_since(start_time):
 
 
 def wait_for_reply(timeout_seconds, generation):
+    while tts_active:
+        time.sleep(0.1)
     start = time.time()
+    print(f"[DIALOG] Dinleniyor {timeout_seconds}s — voice_accepting={voice_accepting}")
     while time.time() - start < timeout_seconds:
-        if generation != emergency_generation or latest_data["status"] != "danger":
+        if generation != emergency_generation:
             return ""
         reply = get_reply_since(start)
         if reply:
+            print(f"[DIALOG] Cevap alindi: '{reply}'")
             return reply
         time.sleep(0.2)
+    print("[DIALOG] Süre doldu, cevap yok.")
     return ""
 
 
 def finish_if_normal(generation):
     if generation != emergency_generation:
         return True
-    if latest_data["status"] == "danger":
-        return False
+    if latest_data["status"] != "danger":
+        say_fixed("RECOVERY", "Readings are returning to normal. Please stay calm.")
+        return True
+    return False
 
-    say_ai(
-        "RECOVERY CHECK",
-        "recovery",
-        "The readings are returning to normal. Are you feeling better?",
-    )
-    return True
+
+def llm_say(stage_instruction, history, fallback):
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history[-6:])
+    messages.append({"role": "user", "content": stage_instruction})
+    try:
+        with ai_lock:
+            full_text = ""
+            for chunk in ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=messages,
+                options={"temperature": 0.3},
+                stream=True,
+            ):
+                token = chunk.get("message", {}).get("content", "")
+                full_text += token
+                if any(c in token for c in ".!?"):
+                    break
+        sentence = first_sentence(full_text) or fallback
+        print(f"[LLM] {sentence}")
+        return sentence
+    except Exception as e:
+        print(f"[OLLAMA ERROR] {e}")
+        return fallback
+
+
+def speak_log(msg, history):
+    latest_data["ai_decision"] = f"[EMERGENCY AI]\nAI Speech: {msg}"
+    history.append({"role": "assistant", "content": msg})
+    speak_text(msg)
 
 
 def run_emergency_dialog(generation):
@@ -186,68 +234,96 @@ def run_emergency_dialog(generation):
 
     try:
         voice_accepting = True
-        say_fixed("STAGE 1 - PATIENT CHECK", "Hello, can you hear me right now?")
-        reply = wait_for_reply(3, generation)
-        if finish_if_normal(generation):
-            return
+        history = []
+
+        # --- AŞAMA 1: Hastayı kontrol et ---
+        msg = llm_say(
+            "Stage: patient check. A seizure was detected. Speak directly to the patient and ask if they can hear you.",
+            history, "Hello, can you hear me right now?"
+        )
+        speak_log(msg, history)
+
+        reply = wait_for_reply(8, generation)
+        if finish_if_normal(generation): return
 
         if not reply:
-            say_fixed("STAGE 1 - PATIENT CHECK", "If you can hear me, squeeze a hand or make any sound.")
-            reply = wait_for_reply(5, generation)
-            if finish_if_normal(generation):
-                return
-
-        if reply:
-            say_ai(
-                "PATIENT RESPONSE",
-                "patient responded",
-                "I heard you. Stay calm, stay low, and keep your head safe.",
-                "A response was detected; transcription may be inaccurate, so treat it only as a sign of response.",
+            msg = llm_say(
+                "Stage: second patient check. No response. Try once more to reach the patient.",
+                history, "If you can hear me, squeeze your hand or make any sound."
             )
-            say_fixed("STAGE 2 - PATIENT SAFETY", "If you can, lie on your side and move away from hard objects.")
-            wait_for_reply(10, generation)
-            if finish_if_normal(generation):
-                return
-        else:
-            say_fixed("NO PATIENT RESPONSE", "Attention, this person may be having a seizure.")
-            if finish_if_normal(generation):
-                return
-            say_fixed("BYSTANDER MODE", "Please stay calm and follow my instructions one by one.")
+            speak_log(msg, history)
+            reply = wait_for_reply(8, generation)
+            if finish_if_normal(generation): return
 
-        bystander_steps = [
-            ("BYSTANDER STEP 1", "Do not restrain the person or try to stop their movements."),
-            ("BYSTANDER STEP 2", "Place something soft under their head and move hard objects away."),
-            ("BYSTANDER STEP 3", "Do not put anything in their mouth; they cannot swallow their tongue."),
-            ("BYSTANDER STEP 4", "Check the time and wait for the shaking to stop."),
-            ("BYSTANDER STEP 5", "If it lasts longer than five minutes, call emergency services immediately."),
-        ]
+        # --- AŞAMA 2A: Hasta cevap verdi ---
+        if reply:
+            history.append({"role": "user", "content": reply})
+            msg = llm_say(
+                f"Stage: patient responded. They said: '{reply}'. Reassure them and tell them what to do to stay safe.",
+                history, "I hear you. Stay calm, lie still, and keep your head protected."
+            )
+            speak_log(msg, history)
 
-        step_index = 0
-        while generation == emergency_generation and latest_data["status"] == "danger":
-            label, text = bystander_steps[step_index]
-            say_fixed(label, text)
-            reply = wait_for_reply(10, generation)
-            if finish_if_normal(generation):
-                return
-            if reply:
-                say_ai(
-                    "FOLLOW-UP",
-                    "bystander response",
-                    "I heard you. Continue the safety steps and keep watching their breathing.",
-                    "A spoken response was detected; transcription may be inaccurate.",
+            while generation == emergency_generation:
+                if finish_if_normal(generation): return
+                reply = wait_for_reply(10, generation)
+                if finish_if_normal(generation): return
+                if reply:
+                    history.append({"role": "user", "content": reply})
+                msg = llm_say(
+                    f"Stage: patient dialog. They said: '{reply or 'nothing'}'. Continue guiding the patient through the seizure safely.",
+                    history, "Stay as still as possible and focus on breathing slowly."
                 )
-            step_index = (step_index + 1) % len(bystander_steps)
+                speak_log(msg, history)
+
+        # --- AŞAMA 2B: Hasta cevap vermedi — yakınlara dön ---
+        else:
+            msg = llm_say(
+                "Stage: no patient response. Alert bystanders that this person may be having an epileptic seizure and ask them to listen carefully.",
+                history, "Attention everyone, this person may be having a seizure. Please listen to my instructions."
+            )
+            speak_log(msg, history)
+            if finish_if_normal(generation): return
+
+            for i, step in enumerate(BYSTANDER_STEPS):
+                if finish_if_normal(generation): return
+
+                msg = llm_say(
+                    f"Stage: bystander step {i+1} of {len(BYSTANDER_STEPS)}. Tell bystanders to do this now: {step}",
+                    history, step
+                )
+                speak_log(msg, history)
+
+                reply = wait_for_reply(10, generation)
+                if finish_if_normal(generation): return
+
+                if reply:
+                    history.append({"role": "user", "content": reply})
+                    msg = llm_say(
+                        f"Stage: bystander confirmed step {i+1}. They said: '{reply}'. Acknowledge briefly and tell them the next step is coming.",
+                        history, "Good, keep going."
+                    )
+                    speak_log(msg, history)
+
+            if generation == emergency_generation:
+                msg = llm_say(
+                    "Stage: all steps given. Remind bystanders to keep watching the patient and stay calm.",
+                    history, "Keep watching them carefully and stay calm until help arrives."
+                )
+                speak_log(msg, history)
+
     finally:
         voice_accepting = False
         emergency_mode_active = False
 
 
 def emergency_manager_loop():
-    global emergency_mode_active, emergency_generation, voice_accepting
+    global emergency_mode_active, emergency_generation, voice_accepting, emergency_start_time
 
     while True:
         if latest_data["status"] == "danger" and not emergency_mode_active:
             emergency_mode_active = True
+            emergency_start_time = time.time()
             emergency_generation += 1
             threading.Thread(
                 target=run_emergency_dialog,
@@ -255,26 +331,25 @@ def emergency_manager_loop():
                 daemon=True,
             ).start()
 
-        if latest_data["status"] != "danger" and emergency_mode_active:
-            voice_accepting = False
-            emergency_generation += 1
+        if emergency_mode_active:
+            elapsed = time.time() - emergency_start_time
+            if elapsed >= EMERGENCY_MIN_DURATION:
+                voice_accepting = False
+                emergency_mode_active = False
+                emergency_generation += 1
 
         time.sleep(0.5)
 
 
 def is_danger(data):
     status = str(data.get("status", "")).upper()
-    hr = latest_data["heart_rate"]
-    spo2 = latest_data["spo2"]
-    shake = latest_data["shake_level"]
-    tremor_hz = latest_data["tremor_hz"]
-
     if status == "SEIZURE":
         return True
 
-    motion_match = shake >= MOTION_SEIZURE_G and TREMOR_MIN_HZ <= tremor_hz <= TREMOR_MAX_HZ
-    heart_match = hr >= HR_SEIZURE_BPM or (0 < spo2 <= SPO2_SEIZURE_PERCENT)
-    return motion_match and heart_match
+    shake = latest_data["shake_level"]
+    tremor_hz = latest_data["tremor_hz"]
+    motion_match = shake >= 2.0 and TREMOR_MIN_HZ <= tremor_hz <= TREMOR_MAX_HZ
+    return motion_match
 
 
 def read_serial_data():
@@ -313,48 +388,68 @@ def ask_ai(user_text):
 
 
 def continuous_listen():
+    global whisper_model
+
     if not ENABLE_VOICE:
         print("[VOICE] Voice listener disabled.")
         return
-    if sd is None or vosk is None:
-        print("[VOICE] sounddevice or vosk is not installed; voice listener disabled.")
-        return
-    if not os.path.isdir(VOSK_MODEL_PATH):
-        print(f"[VOICE] Vosk model not found at {VOSK_MODEL_PATH}; voice listener disabled.")
+    if sd is None or np is None:
+        print("[VOICE] sounddevice or numpy is not installed; voice listener disabled.")
         return
 
     try:
-        model = vosk.Model(VOSK_MODEL_PATH)
+        from faster_whisper import WhisperModel
+        whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+        print("[VOICE] faster-whisper small model loaded.")
     except Exception as e:
-        print(f"[VOICE] Vosk model error: {e}")
+        print(f"[VOICE] Whisper model load error: {e}")
         return
 
     samplerate = 16000
-    blocksize = 8000
-    print("[VOICE] Microphone listener active.")
+    chunk_sec = 0.8
+    chunk_samples = int(chunk_sec * samplerate)
+    rms_min = 0.003
+    print("[VOICE] Listener active — her 0.8 saniyede bir dinliyor.")
 
-    def callback(indata, frames, time_info, status):
-        if not tts_active:
-            audio_q.put(bytes(indata))
+    while True:
+        try:
+            if tts_active:
+                time.sleep(0.2)
+                continue
 
-    try:
-        with sd.RawInputStream(
-            samplerate=samplerate,
-            blocksize=blocksize,
-            dtype="int16",
-            channels=1,
-            callback=callback,
-        ):
-            rec = vosk.KaldiRecognizer(model, samplerate)
-            while True:
-                chunk = audio_q.get()
-                if rec.AcceptWaveform(chunk):
-                    result = json.loads(rec.Result())
-                    text = result.get("text", "").strip()
-                    if len(text) > 1:
-                        remember_voice_text(text)
-    except Exception as e:
-        print(f"[VOICE] Microphone error: {e}")
+            audio = sd.rec(chunk_samples, samplerate=samplerate, channels=1, dtype="float32")
+            sd.wait()
+
+            if tts_active:
+                continue
+
+            audio_flat = audio.flatten()
+            rms = float(np.sqrt(np.mean(audio_flat ** 2)))
+            print(f"[MIC] rms={rms:.4f}  voice_accepting={voice_accepting}")
+
+            if rms < rms_min:
+                continue
+
+            segments, _ = whisper_model.transcribe(
+                audio_flat, language="en", beam_size=1,
+                initial_prompt="seizure, epilepsy, yes, no, help, okay, done, I can hear you"
+            )
+            text = " ".join(s.text for s in segments).strip()
+            if not text:
+                continue
+
+            print(f"[VOICE HEARD] '{text}'")
+
+            if voice_accepting:
+                remember_voice_text(text)
+            else:
+                reply = ask_ai(text)
+                latest_data["ai_decision"] = f"Q: {text}\nA: {reply}"
+                threading.Thread(target=speak_text, args=(reply,), daemon=True).start()
+
+        except Exception as e:
+            print(f"[VOICE] error: {e}")
+            time.sleep(1)
 
 
 @app.route("/")

@@ -4,4 +4,4 @@ ollama
 pyttsx3
 sounddevice
 numpy
-vosk
+faster-whisper

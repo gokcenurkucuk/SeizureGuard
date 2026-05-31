@@ -154,15 +154,33 @@
 </div>
 
 <script>
+    let smoothedHR = 0;
+    let smoothedSpO2 = 0;
+
     async function fetchTelemetry() {
         try {
             const response = await fetch('/api/data');
             const data = await response.json();
-            
-            // Değerleri HTML elemanlarına bas
-            document.getElementById('hr-val').innerText = data.heart_rate > 0 ? data.heart_rate : '--';
-            document.getElementById('spo2-val').innerText = data.spo2 > 0 ? data.spo2 : '--';
-            document.getElementById('vibration-val').innerText = data.shake_level > 0 ? data.shake_level.toFixed(2) : '--';
+
+            // HR: EMA yumuşatma — ani atlamalar engellenir, 70'ten başlar
+            if (data.heart_rate > 0) {
+                if (smoothedHR === 0) smoothedHR = 70;
+                smoothedHR = Math.round(smoothedHR * 0.93 + data.heart_rate * 0.07);
+            } else {
+                smoothedHR = 0;
+            }
+
+            // SpO2: hafif yumuşatma
+            if (data.spo2 > 0) {
+                if (smoothedSpO2 === 0) smoothedSpO2 = data.spo2;
+                else smoothedSpO2 = Math.round(smoothedSpO2 * 0.8 + data.spo2 * 0.2);
+            } else {
+                smoothedSpO2 = 0;
+            }
+
+            document.getElementById('hr-val').innerText = smoothedHR > 0 ? smoothedHR : '--';
+            document.getElementById('spo2-val').innerText = smoothedSpO2 > 0 ? smoothedSpO2 : '--';
+            document.getElementById('vibration-val').innerText = data.shake_level.toFixed(2);
             document.getElementById('ai-response-text').innerText = data.ai_decision;
             
             const banner = document.getElementById('system-status-banner');
@@ -187,8 +205,7 @@
         }
     }
 
-    // Saniyede bir asenkron güncelleme (Hocanın istediği gibi AJAX Fetch)
-    setInterval(fetchTelemetry, 1000);
+    setInterval(fetchTelemetry, 200);
 </script>
 
 </body>

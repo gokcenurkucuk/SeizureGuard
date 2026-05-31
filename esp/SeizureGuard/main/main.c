@@ -19,18 +19,18 @@
 
 #define MOTION_SEIZURE_G      1.5f
 #define HR_SEIZURE_BPM        120.0f
-#define SPO2_SEIZURE_PERCENT  90.0f
+#define SPO2_SEIZURE_PERCENT  80.0f
 #define FINGER_RED_MIN        50000U
 #define FINGER_IR_MIN         50000U
 #define FINGER_AC_MIN         80U
-#define SENSOR_SAMPLE_COUNT   50
+#define SENSOR_SAMPLE_COUNT   25
 #define SENSOR_SAMPLE_MS      20
 #define BPM_MIN_VALID         45.0f
-#define BPM_MAX_VALID         180.0f
-#define BPM_MAX_JUMP          50.0f
+#define BPM_MAX_VALID         120.0f
+#define BPM_MAX_JUMP          25.0f
 #define TREMOR_MIN_HZ         4.0f
 #define TREMOR_MAX_HZ         12.0f
-#define SEIZURE_HOLD_WINDOWS  15
+#define SEIZURE_HOLD_WINDOWS  1
 
 static int alarm_state = 0;
 static int seizure_hold_counter = 0;
@@ -155,11 +155,11 @@ static void update_heart_rate_from_ir(uint32_t ir, float *window_hr) {
         return;
     }
 
-    ir_dc_level = (ir_dc_level * 0.95f) + ((float)ir * 0.05f);
+    ir_dc_level = (ir_dc_level * 0.80f) + ((float)ir * 0.20f);
     float ir_ac = (float)ir - ir_dc_level;
-    float threshold = ir_dc_level * 0.003f;
-    if (threshold < 100.0f) {
-        threshold = 100.0f;
+    float threshold = ir_dc_level * 0.0006f;
+    if (threshold < 25.0f) {
+        threshold = 25.0f;
     }
 
     TickType_t now_tick = xTaskGetTickCount();
@@ -169,9 +169,8 @@ static void update_heart_rate_from_ir(uint32_t ir, float *window_hr) {
             float bpm = 60000.0f / interval_ms;
 
             if (bpm >= BPM_MIN_VALID && bpm <= BPM_MAX_VALID) {
-                bool bpm_is_stable = measured_hr <= 0.0f || fabsf(bpm - measured_hr) <= BPM_MAX_JUMP;
-
-                if (bpm_is_stable) {
+                float ref = (measured_hr > 0.0f) ? measured_hr : 75.0f;
+                if (fabsf(bpm - ref) <= BPM_MAX_JUMP) {
                     *window_hr = bpm;
                 }
             }
@@ -343,22 +342,14 @@ void app_main(void) {
 
     while (1) {
         sensor_result_t sensor = read_sensor_window();
-        bool strong_motion = sensor.vibration >= MOTION_SEIZURE_G;
-        bool tremor_range = sensor.tremor_hz >= TREMOR_MIN_HZ && sensor.tremor_hz <= TREMOR_MAX_HZ;
-        bool heart_risk = sensor.finger_present &&
-                          ((sensor.hr >= HR_SEIZURE_BPM) ||
-                           (sensor.spo2 > 0.0f && sensor.spo2 <= SPO2_SEIZURE_PERCENT));
-        const char *status_string = "NORMAL";
+        bool seizure_motion = sensor.vibration >= 2.0f;
+        bool tremor_range = sensor.vibration >= 0.5f &&
+                            sensor.tremor_hz >= TREMOR_MIN_HZ &&
+                            sensor.tremor_hz <= TREMOR_MAX_HZ;
+        bool is_seizure = seizure_motion && tremor_range;
+        const char *status_string = is_seizure ? "SEIZURE" : "NORMAL";
 
-        if ((strong_motion && tremor_range && heart_risk) ||
-            (strong_motion && tremor_range && seizure_hold_counter > 0)) {
-            seizure_hold_counter = SEIZURE_HOLD_WINDOWS;
-        }
-
-        if (seizure_hold_counter > 0) {
-            status_string = "SEIZURE";
-            seizure_hold_counter--;
-
+        if (is_seizure) {
             if (alarm_state == 0) {
                 alarm_state = 1;
                 trigger_buzzer_sequence();
