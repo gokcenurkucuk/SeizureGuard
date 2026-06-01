@@ -2,145 +2,228 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>CEN322 Project Dashboard - SeizureGuard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SeizureGuard Dashboard</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: Arial, Helvetica, sans-serif;
-            background-color: #0f172a;
-            color: #f1f5f9;
-            padding: 30px;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #eef2f7;
+            color: #1e293b;
+            padding: 28px 18px;
+            min-height: 100vh;
         }
         .dashboard-container {
-            max-width: 900px;
+            max-width: 880px;
             margin: 0 auto;
-            background-color: #1e293b;
-            border: 2px solid #334155;
-            border-radius: 8px;
-            padding: 25px;
+            background: #ffffff;
+            border-radius: 20px;
+            padding: 32px;
+            box-shadow: 0 10px 40px rgba(30, 41, 59, 0.08);
         }
+
+        /* Header */
         .project-meta {
-            border-bottom: 2px solid #334155;
-            padding-bottom: 15px;
-            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            border-bottom: 1px solid #eef2f7;
+            padding-bottom: 20px;
+            margin-bottom: 24px;
+        }
+        .logo {
+            width: 46px; height: 46px;
+            border-radius: 13px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 24px;
+            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
         }
         .project-meta h1 {
-            font-size: 26px;
-            color: #f97316;
-            letter-spacing: 1px;
+            font-size: 24px;
+            font-weight: 800;
+            color: #1e293b;
+            letter-spacing: -0.3px;
         }
         .project-meta p {
             font-size: 12px;
             color: #94a3b8;
-            margin-top: 5px;
+            margin-top: 3px;
         }
+
+        /* Status banner */
         .status-banner {
-            padding: 12px;
-            border-radius: 6px;
-            font-weight: bold;
+            padding: 16px;
+            border-radius: 14px;
+            font-weight: 700;
             text-align: center;
-            margin-bottom: 25px;
+            margin-bottom: 24px;
             text-transform: uppercase;
             font-size: 14px;
             letter-spacing: 1px;
+            transition: all 0.3s;
         }
-        .status-waiting { background-color: #475569; color: #ffffff; }
-        .status-normal { background-color: #16a34a; color: #ffffff; }
-        .status-danger { background-color: #dc2626; color: #ffffff; animation: emergency-flash 1s infinite; }
-        
-        @keyframes emergency-flash {
-            0% { opacity: 1; }
-            50% { opacity: 0.6; }
-            100% { opacity: 1; }
+        .status-waiting { background: #f1f5f9; color: #64748b; }
+        .status-normal {
+            background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+            color: #047857;
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.2);
         }
-        
+        .status-danger {
+            background: linear-gradient(135deg, #fee2e2, #fecaca);
+            color: #b91c1c;
+            box-shadow: 0 6px 24px rgba(239, 68, 68, 0.3);
+            animation: flash 1s infinite;
+        }
+        @keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0.75; } }
+
+        /* Vitals */
         .vitals-grid {
-            display: table;
-            width: 100%;
-            table-layout: fixed;
-            border-collapse: separate;
-            border-spacing: 15px 0;
-            margin-bottom: 25px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
         }
         .vital-card {
-            display: table-cell;
-            background-color: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            padding: 20px;
+            background: #f8fafc;
+            border: 1px solid #eef2f7;
+            border-radius: 16px;
+            padding: 22px 16px;
             text-align: center;
+            transition: transform 0.15s, box-shadow 0.15s;
         }
+        .vital-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(30,41,59,0.08); }
+        .vital-card .icon { font-size: 22px; margin-bottom: 8px; }
         .vital-label {
             font-size: 11px;
             color: #94a3b8;
             text-transform: uppercase;
             letter-spacing: 1px;
-            margin-bottom: 10px;
+            font-weight: 600;
+            margin-bottom: 8px;
         }
         .vital-value {
-            font-size: 36px;
-            font-weight: bold;
-            color: #f8fafc;
-            font-family: Arial, sans-serif;
+            font-size: 40px;
+            font-weight: 800;
+            color: #1e293b;
+            line-height: 1;
         }
-        .vital-unit {
-            font-size: 12px;
-            color: #64748b;
-            margin-top: 5px;
-        }
+        .card-hr .vital-value { color: #ef4444; }
+        .card-spo2 .vital-value { color: #3b82f6; }
+        .card-motion .vital-value { color: #8b5cf6; }
+        .vital-unit { font-size: 12px; color: #94a3b8; margin-top: 6px; }
+
+        /* AI panel */
         .ai-section {
-            background-color: #0f172a;
-            border-left: 4px solid #f97316;
-            border-top: 1px solid #334155;
-            border-right: 1px solid #334155;
-            border-bottom: 1px solid #334155;
-            border-radius: 0 6px 6px 0;
+            background: #f8fafc;
+            border: 1px solid #eef2f7;
+            border-left: 4px solid #6366f1;
+            border-radius: 14px;
             padding: 20px;
+            margin-bottom: 18px;
         }
         .ai-section.ai-danger {
-            border-left-color: #dc2626;
-            background-color: #2d0b0b;
+            border-left-color: #ef4444;
+            background: #fef2f2;
         }
         .ai-title {
-            font-size: 12px;
+            font-size: 11px;
             color: #94a3b8;
             text-transform: uppercase;
             letter-spacing: 1px;
             margin-bottom: 8px;
-            font-weight: bold;
+            font-weight: 700;
         }
         .ai-text {
             font-size: 14px;
-            color: #e2e8f0;
+            color: #334155;
             line-height: 1.6;
             white-space: pre-wrap;
         }
+
+        /* Voice assistant */
+        .voice-section {
+            background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+            border: 1px solid #ddd6fe;
+            border-radius: 16px;
+            padding: 26px;
+            text-align: center;
+        }
+        .voice-title {
+            font-size: 12px;
+            color: #7c3aed;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 18px;
+            font-weight: 700;
+        }
+        #voice-btn {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: #fff;
+            border: none;
+            border-radius: 50px;
+            padding: 15px 42px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.2s;
+            box-shadow: 0 8px 22px rgba(139, 92, 246, 0.35);
+        }
+        #voice-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(139, 92, 246, 0.5); }
+        #voice-btn:disabled { opacity: 0.7; cursor: default; transform: none; }
+        #voice-btn.recording {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            animation: pulse-rec 1.2s infinite;
+        }
+        @keyframes pulse-rec {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+            70% { box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .voice-field {
+            text-align: left;
+            margin-top: 14px;
+            font-size: 14px;
+            color: #334155;
+            line-height: 1.6;
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 13px 16px;
+            box-shadow: 0 2px 8px rgba(30,41,59,0.04);
+        }
+        .voice-field b { color: #7c3aed; }
     </style>
 </head>
 <body>
 
 <div class="dashboard-container">
     <div class="project-meta">
-        <h1>SeizureGuard Dashboard</h1>
-        <p>CEN322 - Internet of Things Project | Student Copy Telemetry Node</p>
+        <div class="logo">🛡️</div>
+        <div>
+            <h1>SeizureGuard</h1>
+            <p>CEN322 · Internet of Things Project · Real-Time Telemetry</p>
+        </div>
     </div>
 
     <div id="system-status-banner" class="status-banner status-waiting">
-        Connecting to Edge Gateway...
+        Connecting to Edge Gateway…
     </div>
 
     <div class="vitals-grid">
-        <div class="vital-card">
+        <div class="vital-card card-hr">
+            <div class="icon">❤️</div>
             <div class="vital-label">Heart Rate</div>
             <div id="hr-val" class="vital-value">--</div>
             <div class="vital-unit">BPM</div>
         </div>
-        <div class="vital-card">
+        <div class="vital-card card-spo2">
+            <div class="icon">🫁</div>
             <div class="vital-label">Blood Oxygen</div>
             <div id="spo2-val" class="vital-value">--</div>
             <div class="vital-unit">SpO2 %</div>
         </div>
-        <div class="vital-card">
+        <div class="vital-card card-motion">
+            <div class="icon">📈</div>
             <div class="vital-label">Motion Intensity</div>
             <div id="vibration-val" class="vital-value">--</div>
             <div class="vital-unit">G-Force</div>
@@ -149,48 +232,83 @@
 
     <div id="ai-panel-box" class="ai-section">
         <div class="ai-title">Edge AI Execution Block</div>
-        <div id="ai-response-text" class="ai-text">Waiting for real-time parser execution pipeline...</div>
+        <div id="ai-response-text" class="ai-text">Waiting for real-time data…</div>
+    </div>
+
+    <div class="voice-section">
+        <div class="voice-title">🎙️ AI Voice Assistant</div>
+        <button id="voice-btn">Start Speaking</button>
+        <div class="voice-field"><b>You said:</b> <span id="voice-user">—</span></div>
+        <div class="voice-field"><b>Assistant:</b> <span id="voice-assistant">—</span></div>
     </div>
 </div>
 
 <script>
-    let smoothedHR = 0;
-    let smoothedSpO2 = 0;
-
     async function fetchTelemetry() {
         try {
             const response = await fetch('/api/data');
             const data = await response.json();
 
-            // Demo modu: degerler zaten temiz, dogrudan goster
             document.getElementById('hr-val').innerText = data.heart_rate > 0 ? data.heart_rate : '--';
             document.getElementById('spo2-val').innerText = data.spo2 > 0 ? data.spo2 : '--';
             document.getElementById('vibration-val').innerText = data.shake_level.toFixed(2);
             document.getElementById('ai-response-text').innerText = data.ai_decision;
-            
+
             const banner = document.getElementById('system-status-banner');
             const aiPanel = document.getElementById('ai-panel-box');
-            
-            // Durum Renk Yönetimi
+
             if (data.status === 'danger') {
                 banner.className = 'status-banner status-danger';
-                banner.innerText = '⚠️ EMERGENCY: Epilepsy Seizure Detected';
+                banner.innerText = '⚠️ EMERGENCY · Epilepsy Seizure Detected';
                 aiPanel.className = 'ai-section ai-danger';
             } else if (data.status === 'normal') {
                 banner.className = 'status-banner status-normal';
-                banner.innerText = 'SYSTEM NORMAL - Vitals Stable';
+                banner.innerText = '✓ System Normal · Vitals Stable';
                 aiPanel.className = 'ai-section';
             } else {
                 banner.className = 'status-banner status-waiting';
-                banner.innerText = 'Waiting for ESP32-S3 data packets...';
+                banner.innerText = 'Waiting for ESP32-S3 data packets…';
                 aiPanel.className = 'ai-section';
             }
         } catch (error) {
-            document.getElementById('ai-response-text').innerText = "Edge Sunucusu Bağlantı Hatası.";
+            document.getElementById('ai-response-text').innerText = "Edge server connection error.";
         }
     }
-
     setInterval(fetchTelemetry, 200);
+
+    // ===== AI Voice Assistant — push to talk =====
+    let isRecording = false;
+    const voiceBtn = document.getElementById('voice-btn');
+    const voiceUser = document.getElementById('voice-user');
+    const voiceAssistant = document.getElementById('voice-assistant');
+
+    voiceBtn.addEventListener('click', async () => {
+        if (!isRecording) {
+            try {
+                await fetch('/api/voice/start', { method: 'POST' });
+                isRecording = true;
+                voiceBtn.textContent = 'Stop Speaking';
+                voiceBtn.classList.add('recording');
+            } catch (e) {
+                voiceAssistant.textContent = 'Microphone access failed.';
+            }
+        } else {
+            isRecording = false;
+            voiceBtn.textContent = 'Processing…';
+            voiceBtn.disabled = true;
+            voiceBtn.classList.remove('recording');
+            try {
+                const res = await fetch('/api/voice/stop', { method: 'POST' });
+                const data = await res.json();
+                voiceUser.textContent = data.user_text || '—';
+                voiceAssistant.textContent = data.assistant_text || '—';
+            } catch (e) {
+                voiceAssistant.textContent = 'LLM response failed.';
+            }
+            voiceBtn.textContent = 'Start Speaking';
+            voiceBtn.disabled = false;
+        }
+    });
 </script>
 
 </body>

@@ -61,6 +61,11 @@ last_user_text = ""
 last_user_time = 0.0
 _tts_engine_ref = None
 
+# Bas-konus (push-to-talk) durumu
+manual_recording = False
+manual_frames = []
+manual_lock = threading.Lock()
+
 EMERGENCY_MIN_DURATION = 25.0
 
 SYSTEM_PROMPT = (
@@ -372,19 +377,16 @@ def read_serial_data():
 
                         if DEMO_MODE:
                             shake = latest_data["shake_level"]
-                            # 1) Titresim esigi gecince HR/SpO2 de nobet degerine ciksin (paralel)
                             if shake >= DEMO_MOTION_THRESHOLD:
+                                # KRIZ DEMO: titresim esik ustunde -> nabiz/spo2 da esik degerine ciksin
                                 latest_data["heart_rate"] = DEMO_SEIZURE_HR
                                 latest_data["spo2"] = DEMO_SEIZURE_SPO2
+                                latest_data["status"] = "danger"
                             else:
-                                latest_data["heart_rate"] = DEMO_NORMAL_HR
-                                latest_data["spo2"] = DEMO_NORMAL_SPO2
-                            # 2) Alarm icin UCU BIRDEN esik ustunde olmali
-                            motion_high = shake >= DEMO_MOTION_THRESHOLD
-                            hr_high = latest_data["heart_rate"] >= HR_SEIZURE_BPM
-                            spo2_low = latest_data["spo2"] <= SPO2_SEIZURE_PERCENT
-                            seizure_now = motion_high and hr_high and spo2_low
-                            latest_data["status"] = "danger" if seizure_now else "normal"
+                                # NORMAL: GERCEK sensor degeri (parmak yoksa 0 -> ekranda --)
+                                latest_data["heart_rate"] = int(float(data.get("hr", 0)))
+                                latest_data["spo2"] = int(float(data.get("spo2", 0)))
+                                latest_data["status"] = "normal"
                         else:
                             latest_data["heart_rate"] = int(float(data.get("hr", 0)))
                             latest_data["spo2"] = int(float(data.get("spo2", 0)))
@@ -433,7 +435,8 @@ def continuous_listen():
 
     while True:
         try:
-            if tts_active or not voice_accepting:
+            # Bas-konus aktifken sureklı dinlemeyi durdur (mikrofon cakismasin)
+            if manual_recording or tts_active or not voice_accepting:
                 time.sleep(0.2)
                 continue
 
@@ -498,8 +501,133 @@ def chat():
     return jsonify({"reply": reply})
 
 
+# ============ BAS-KONUS (Push-to-Talk) Sesli Asistan ============
+
+VOICE_ASSISTANT_PROMPT = (
+    "You are SeizureGuard, an offline emergency voice assistant for a seizure detection device. "
+    "You run fully locally. Do not mention cloud, API, or internet. "
+    "Speak calmly. Keep every sentence short. Ask only one question at a time. "
+    "Give only one instruction at a time. Do not give long explanations. "
+    "Never tell anyone to restrain the person. Never tell anyone to put anything in the person's mouth. "
+    "If needed, tell them to move hard objects away, protect the head, check breathing, "
+    "and call emergency services if the seizure lasts more than five minutes."
+)
+
+
+_manual_stream = None
+
+
+def _manual_callback(indata, frames_count, time_info, status):
+    """Mikrofon akisindan gelen her parcayi biriktir (kesintisiz)."""
+    with manual_lock:
+        manual_frames.append(indata.copy().flatten())
+
+
+@app.route("/api/voice/start", methods=["POST"])
+def voice_start():
+    global manual_recording, manual_frames, _manual_stream
+    if sd is None or np is None:
+        return jsonify({"error": "Microphone access failed."}), 500
+    with manual_lock:
+        manual_frames = []
+    try:
+        _manual_stream = sd.InputStream(
+            samplerate=16000, channels=1, dtype="float32", callback=_manual_callback
+        )
+        _manual_stream.start()
+    except Exception as e:
+        print(f"[VOICE PTT] mikrofon acilamadi: {e}")
+        return jsonify({"error": "Microphone access failed."}), 500
+    manual_recording = True
+    print("[VOICE PTT] Kayit basladi (InputStream).")
+    return jsonify({"status": "recording"})
+
+
+@app.route("/api/voice/stop", methods=["POST"])
+def voice_stop():
+    global manual_recording, _manual_stream
+    manual_recording = False
+    if _manual_stream is not None:
+        try:
+            _manual_stream.stop()
+            _manual_stream.close()
+        except Exception:
+            pass
+        _manual_stream = None
+    time.sleep(0.2)
+
+    with manual_lock:
+        frames = list(manual_frames)
+    if not frames:
+        return jsonify({"user_text": "", "assistant_text": "Could not transcribe audio."})
+
+    audio = np.concatenate(frames)
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    dur = len(audio) / 16000
+    print(f"[VOICE PTT] Kayit bitti: {dur:.1f}s, {len(frames)} blok, RMS={rms:.4f}")
+
+    if rms < 0.001:
+        return jsonify({
+            "user_text": "",
+            "assistant_text": f"Microphone too quiet (RMS={rms:.4f}, {dur:.1f}s). Speak louder or check mic.",
+        })
+
+    # 1) Ses -> Metin (faster-whisper, lokal)
+    try:
+        segments, _ = whisper_model.transcribe(audio, language="en", beam_size=1)
+        user_text = " ".join(s.text for s in segments).strip()
+    except Exception as e:
+        print(f"[VOICE PTT] Whisper hatasi: {e}")
+        return jsonify({"user_text": "", "assistant_text": "Could not transcribe audio."})
+
+    if not user_text:
+        return jsonify({"user_text": "", "assistant_text": "Could not transcribe audio."})
+
+    print(f"[VOICE PTT] You said: {user_text}")
+
+    # 2) Metin -> LLM cevabi (Ollama llama3.2, lokal)
+    try:
+        with ai_lock:
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[
+                    {"role": "system", "content": VOICE_ASSISTANT_PROMPT},
+                    {"role": "user", "content": f"The user said: {user_text}\nRespond with one short helpful sentence."},
+                ],
+                options={"temperature": 0.3},
+            )
+        assistant_text = first_sentence(response.get("message", {}).get("content", ""))
+    except Exception as e:
+        print(f"[VOICE PTT] Ollama hatasi: {e}")
+        return jsonify({"user_text": user_text, "assistant_text": "LLM response failed."})
+
+    if not assistant_text:
+        assistant_text = "Please stay calm and keep the person safe."
+
+    print(f"[VOICE PTT] Assistant: {assistant_text}")
+    latest_data["ai_decision"] = f"You said: {user_text}\nAssistant: {assistant_text}"
+
+    # 3) Cevap -> Ses (pyttsx3, lokal)
+    threading.Thread(target=speak_text, args=(assistant_text,), daemon=True).start()
+
+    return jsonify({"user_text": user_text, "assistant_text": assistant_text})
+
+
+def load_whisper_model():
+    """Push-to-talk icin whisper modelini onceden yukle."""
+    global whisper_model
+    try:
+        from faster_whisper import WhisperModel
+        whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+        print("[VOICE] faster-whisper small model loaded (push-to-talk hazir).")
+    except Exception as e:
+        print(f"[VOICE] Whisper model load error: {e}")
+
+
 if __name__ == "__main__":
     threading.Thread(target=read_serial_data, daemon=True).start()
     threading.Thread(target=emergency_manager_loop, daemon=True).start()
-    threading.Thread(target=continuous_listen, daemon=True).start()
+    # continuous_listen KAPALI — push-to-talk ile mikrofon cakismasin.
+    # Whisper modelini yine de yukluyoruz ki push-to-talk kullanabilsin.
+    threading.Thread(target=load_whisper_model, daemon=True).start()
     app.run(debug=False, port=5000, use_reloader=False, threaded=True)
