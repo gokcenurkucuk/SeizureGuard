@@ -29,6 +29,14 @@ MOTION_SEIZURE_G = 1.5
 TREMOR_MIN_HZ = 4.0
 TREMOR_MAX_HZ = 12.0
 
+DEMO_MODE = True
+DEMO_SEIZURE_HR = 125     # esik 120 ustu -> tehlike
+DEMO_SEIZURE_SPO2 = 78    # esik 80 ve alti -> tehlike
+DEMO_NORMAL_HR = 76       # normal
+DEMO_NORMAL_SPO2 = 98     # normal
+# Anlik paralel takip: titresim esigi gecince HR/SpO2 de ayni anda nobet degerine ciker.
+DEMO_MOTION_THRESHOLD = 2.0
+
 latest_data = {
     "heart_rate": 0,
     "spo2": 0,
@@ -53,12 +61,15 @@ last_user_text = ""
 last_user_time = 0.0
 _tts_engine_ref = None
 
-EMERGENCY_MIN_DURATION = 5.0
+EMERGENCY_MIN_DURATION = 25.0
 
 SYSTEM_PROMPT = (
     "You are SeizureGuard, an AI emergency voice assistant for an epilepsy seizure detection wearable. "
-    "You will be given a stage and instructions. Follow them exactly. "
-    "Always reply with ONE short, calm, spoken English sentence. No lists. No diagnosis. No extra words."
+    "Your job is to give CONCRETE, ACTIONABLE safety instructions — tell the person exactly what to DO. "
+    "Do NOT just comfort or reassure (avoid empty phrases like 'I've got you', 'you're safe', 'I'm here'). "
+    "Every reply must contain a clear physical action: lie on your side, move away from hard objects, "
+    "do not stand up, loosen tight clothing, breathe slowly, stay where you are. "
+    "Always reply with ONE short, calm, spoken English sentence that tells them what to do. No diagnosis."
 )
 
 BYSTANDER_STEPS = [
@@ -264,15 +275,17 @@ def run_emergency_dialog(generation):
             )
             speak_log(msg, history)
 
+            # Karsilikli konusma: SADECE hasta konusunca cevap ver, bosta tekrar etme
             while generation == emergency_generation:
                 if finish_if_normal(generation): return
-                reply = wait_for_reply(10, generation)
+                reply = wait_for_reply(12, generation)
                 if finish_if_normal(generation): return
-                if reply:
-                    history.append({"role": "user", "content": reply})
+                if not reply:
+                    continue  # cevap yoksa sessizce beklemeye devam et, ayni seyi tekrarlama
+                history.append({"role": "user", "content": reply})
                 msg = llm_say(
-                    f"Stage: patient dialog. They said: '{reply or 'nothing'}'. Continue guiding the patient through the seizure safely.",
-                    history, "Stay as still as possible and focus on breathing slowly."
+                    f"Stage: patient dialog. The patient said: '{reply}'. Reply with ONE concrete safety action they should do RIGHT NOW during the seizure (lie on your side, move away from hard objects, do not stand, breathe slowly). Do not just comfort them.",
+                    history, "Lie down on your side and keep your head away from hard objects."
                 )
                 speak_log(msg, history)
 
@@ -318,9 +331,12 @@ def run_emergency_dialog(generation):
 
 
 def emergency_manager_loop():
-    global emergency_mode_active, emergency_generation, voice_accepting, emergency_start_time
+    global emergency_mode_active, emergency_generation, emergency_start_time
 
     while True:
+        # Sadece tehlike VAR ve aktif dialog YOKSA yeni dialog baslat.
+        # Dialog kendi kendine biter (status normal olunca finish_if_normal).
+        # Manager zorla kapatmaz -> tek seferde tek thread garantisi.
         if latest_data["status"] == "danger" and not emergency_mode_active:
             emergency_mode_active = True
             emergency_start_time = time.time()
@@ -331,25 +347,12 @@ def emergency_manager_loop():
                 daemon=True,
             ).start()
 
-        if emergency_mode_active:
-            elapsed = time.time() - emergency_start_time
-            if elapsed >= EMERGENCY_MIN_DURATION:
-                voice_accepting = False
-                emergency_mode_active = False
-                emergency_generation += 1
-
         time.sleep(0.5)
 
 
 def is_danger(data):
-    status = str(data.get("status", "")).upper()
-    if status == "SEIZURE":
-        return True
-
-    shake = latest_data["shake_level"]
-    tremor_hz = latest_data["tremor_hz"]
-    motion_match = shake >= 2.0 and TREMOR_MIN_HZ <= tremor_hz <= TREMOR_MAX_HZ
-    return motion_match
+    # Demo modu: anlik paralel — titresim esik ustundeyse nobet, altindaysa normal
+    return latest_data["shake_level"] >= DEMO_MOTION_THRESHOLD
 
 
 def read_serial_data():
@@ -364,11 +367,28 @@ def read_serial_data():
                     if line.startswith("{") and line.endswith("}"):
                         data = json.loads(line)
 
-                        latest_data["heart_rate"] = int(float(data.get("hr", 0)))
-                        latest_data["spo2"] = int(float(data.get("spo2", 0)))
                         latest_data["shake_level"] = float(data.get("vibration", data.get("shake", 0.0)))
                         latest_data["tremor_hz"] = float(data.get("tremor_hz", 0.0))
-                        latest_data["status"] = "danger" if is_danger(data) else "normal"
+
+                        if DEMO_MODE:
+                            shake = latest_data["shake_level"]
+                            # 1) Titresim esigi gecince HR/SpO2 de nobet degerine ciksin (paralel)
+                            if shake >= DEMO_MOTION_THRESHOLD:
+                                latest_data["heart_rate"] = DEMO_SEIZURE_HR
+                                latest_data["spo2"] = DEMO_SEIZURE_SPO2
+                            else:
+                                latest_data["heart_rate"] = DEMO_NORMAL_HR
+                                latest_data["spo2"] = DEMO_NORMAL_SPO2
+                            # 2) Alarm icin UCU BIRDEN esik ustunde olmali
+                            motion_high = shake >= DEMO_MOTION_THRESHOLD
+                            hr_high = latest_data["heart_rate"] >= HR_SEIZURE_BPM
+                            spo2_low = latest_data["spo2"] <= SPO2_SEIZURE_PERCENT
+                            seizure_now = motion_high and hr_high and spo2_low
+                            latest_data["status"] = "danger" if seizure_now else "normal"
+                        else:
+                            latest_data["heart_rate"] = int(float(data.get("hr", 0)))
+                            latest_data["spo2"] = int(float(data.get("spo2", 0)))
+                            latest_data["status"] = "danger" if is_danger(data) else "normal"
 
                     time.sleep(0.05)
         except Exception as e:
@@ -406,29 +426,32 @@ def continuous_listen():
         return
 
     samplerate = 16000
-    chunk_sec = 0.8
+    chunk_sec = 2.5  # Tam cumle yakalamak icin uzun pencere
     chunk_samples = int(chunk_sec * samplerate)
-    rms_min = 0.003
-    print("[VOICE] Listener active — her 0.8 saniyede bir dinliyor.")
+    rms_min = 0.006  # Pencere uzun oldugu icin esik biraz yuksek (gurultu elenmeli)
+    print("[VOICE] Listener active — her 2.5 saniyede bir tam cumle dinliyor.")
 
     while True:
         try:
-            if tts_active:
+            if tts_active or not voice_accepting:
                 time.sleep(0.2)
                 continue
 
             audio = sd.rec(chunk_samples, samplerate=samplerate, channels=1, dtype="float32")
             sd.wait()
 
-            if tts_active:
+            if tts_active or not voice_accepting:
                 continue
 
             audio_flat = audio.flatten()
             rms = float(np.sqrt(np.mean(audio_flat ** 2)))
-            print(f"[MIC] rms={rms:.4f}  voice_accepting={voice_accepting}")
+
+            print(f"[MIC] rms={rms:.4f} esik={rms_min}")
 
             if rms < rms_min:
                 continue
+
+            print(f"[MIC] SES ALGILANDI — Whisper isliyor...")
 
             segments, _ = whisper_model.transcribe(
                 audio_flat, language="en", beam_size=1,
@@ -439,13 +462,7 @@ def continuous_listen():
                 continue
 
             print(f"[VOICE HEARD] '{text}'")
-
-            if voice_accepting:
-                remember_voice_text(text)
-            else:
-                reply = ask_ai(text)
-                latest_data["ai_decision"] = f"Q: {text}\nA: {reply}"
-                threading.Thread(target=speak_text, args=(reply,), daemon=True).start()
+            remember_voice_text(text)
 
         except Exception as e:
             print(f"[VOICE] error: {e}")
@@ -485,4 +502,4 @@ if __name__ == "__main__":
     threading.Thread(target=read_serial_data, daemon=True).start()
     threading.Thread(target=emergency_manager_loop, daemon=True).start()
     threading.Thread(target=continuous_listen, daemon=True).start()
-    app.run(debug=False, port=5000, use_reloader=False)
+    app.run(debug=False, port=5000, use_reloader=False, threaded=True)

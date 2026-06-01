@@ -17,9 +17,9 @@
 #define MPU6050_ADDR          0x68
 #define MAX30102_ADDR         0x57
 
-#define MOTION_SEIZURE_G      1.5f
+#define MOTION_SEIZURE_G      2.0f
 #define HR_SEIZURE_BPM        120.0f
-#define SPO2_SEIZURE_PERCENT  80.0f
+#define SPO2_SEIZURE_PERCENT  90.0f
 #define FINGER_RED_MIN        50000U
 #define FINGER_IR_MIN         50000U
 #define FINGER_AC_MIN         80U
