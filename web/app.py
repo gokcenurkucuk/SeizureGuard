@@ -36,6 +36,8 @@ DEMO_NORMAL_HR = 76       # normal
 DEMO_NORMAL_SPO2 = 98     # normal
 # Anlik paralel takip: titresim esigi gecince HR/SpO2 de ayni anda nobet degerine ciker.
 DEMO_MOTION_THRESHOLD = 2.0
+DANGER_LATCH_SEC = 5.0
+_last_danger_time = 0.0
 
 latest_data = {
     "heart_rate": 0,
@@ -376,9 +378,12 @@ def read_serial_data():
                         latest_data["tremor_hz"] = float(data.get("tremor_hz", 0.0))
 
                         if DEMO_MODE:
+                            global _last_danger_time
                             shake = latest_data["shake_level"]
                             if shake >= DEMO_MOTION_THRESHOLD:
-                                # KRIZ DEMO: titresim esik ustunde -> nabiz/spo2 da esik degerine ciksin
+                                _last_danger_time = time.time()
+                            if time.time() - _last_danger_time < DANGER_LATCH_SEC:
+                                # KRIZ: esik ustunde ya da son 5 sn icinde tetiklendi
                                 latest_data["heart_rate"] = DEMO_SEIZURE_HR
                                 latest_data["spo2"] = DEMO_SEIZURE_SPO2
                                 latest_data["status"] = "danger"

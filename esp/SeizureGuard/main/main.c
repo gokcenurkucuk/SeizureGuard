@@ -20,8 +20,8 @@
 #define MOTION_SEIZURE_G      2.0f
 #define HR_SEIZURE_BPM        120.0f
 #define SPO2_SEIZURE_PERCENT  90.0f
-#define FINGER_RED_MIN        50000U
-#define FINGER_IR_MIN         50000U
+#define FINGER_RED_MIN        100000U
+#define FINGER_IR_MIN         100000U
 #define FINGER_AC_MIN         80U
 #define SENSOR_SAMPLE_COUNT   25
 #define SENSOR_SAMPLE_MS      20
@@ -40,6 +40,7 @@ static bool pulse_was_high = false;
 static TickType_t last_beat_tick = 0;
 static float measured_hr = 0.0f;
 static float measured_spo2 = 0.0f;
+static int no_finger_count = 0;
 
 typedef struct {
     float vibration;
@@ -92,11 +93,11 @@ static void max30102_init(void) {
 }
 
 static void trigger_buzzer_sequence(void) {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         gpio_set_level(BUZZER_GPIO, BUZZER_ACTIVE_LEVEL);
-        vTaskDelay(pdMS_TO_TICKS(180));
-        gpio_set_level(BUZZER_GPIO, BUZZER_IDLE_LEVEL);
         vTaskDelay(pdMS_TO_TICKS(300));
+        gpio_set_level(BUZZER_GPIO, BUZZER_IDLE_LEVEL);
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
@@ -312,6 +313,7 @@ static sensor_result_t read_sensor_window(void) {
 
     result.finger_present = enough_contact && enough_signal_level;
     if (result.finger_present) {
+        no_finger_count = 0;
         if (window_hr > 0.0f) {
             measured_hr = window_hr;
         }
@@ -321,13 +323,25 @@ static sensor_result_t read_sensor_window(void) {
         result.hr = measured_hr;
         result.spo2 = measured_spo2;
     } else {
-        reset_pulse_measurement();
+        no_finger_count++;
+        if (no_finger_count >= 4) {
+            reset_pulse_measurement();
+            no_finger_count = 0;
+        }
+        result.hr = measured_hr;
+        result.spo2 = measured_spo2;
     }
 
     return result;
 }
 
 void app_main(void) {
+    gpio_reset_pin(BUZZER_GPIO);
+    gpio_set_direction(BUZZER_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_drive_capability(BUZZER_GPIO, GPIO_DRIVE_CAP_3);
+    gpio_set_level(BUZZER_GPIO, BUZZER_IDLE_LEVEL);
+    buzzer_startup_test();
+
     ESP_ERROR_CHECK(i2c_master_init());
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -335,18 +349,9 @@ void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
     max30102_init();
 
-    gpio_reset_pin(BUZZER_GPIO);
-    gpio_set_direction(BUZZER_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(BUZZER_GPIO, BUZZER_IDLE_LEVEL);
-    buzzer_startup_test();
-
     while (1) {
         sensor_result_t sensor = read_sensor_window();
-        bool seizure_motion = sensor.vibration >= 2.0f;
-        bool tremor_range = sensor.vibration >= 0.5f &&
-                            sensor.tremor_hz >= TREMOR_MIN_HZ &&
-                            sensor.tremor_hz <= TREMOR_MAX_HZ;
-        bool is_seizure = seizure_motion && tremor_range;
+        bool is_seizure = sensor.vibration >= MOTION_SEIZURE_G;
         const char *status_string = is_seizure ? "SEIZURE" : "NORMAL";
 
         if (is_seizure) {
